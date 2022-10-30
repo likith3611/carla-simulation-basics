@@ -8,16 +8,22 @@ import numpy as np
 #import Transform
 import carla
 import math
+from keras import backend
 from collections import deque
 from keras.applications.xception import Xception
 from keras.layers import Dense, GlobalAveragePooling2D
 from keras.optimizers import Adam
 from keras.models import Model
+from keras.callbacks import TensorBoard
 import tensorflow as tf
 #import keras.backend as backend
 import tensorflow.python.keras.backend as backend
-from threading import Thread, Threading
-
+from threading import Thread
+from tqdm import tqdm
+import keras
+from tensorflow.python.keras.backend import set_session
+#from tensorflow.python.keras.models import load_model
+tf.compat.v1.disable_eager_execution() 
 
 SHOW_PREVIEW=False
 IM_HEIGHT=480
@@ -38,6 +44,23 @@ EPSILON_DECAY = 0.95
 MIN_EPSILON = 0.001
 AGGREGATE_STATS_EVERY = 10
 actor_list=[]
+
+class ModifiedTensorBoard(TensorBoard):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.step = 1
+        self.writer = tf.summary.create_file_writer(self.log_dir)
+    def set_model(self, model):
+        pass
+    def on_epoch_end(self, epoch, logs=None):
+        self.update_stats(**logs)
+    def on_batch_end(self, batch, logs=None):
+        pass
+    def on_train_end(self, _):
+        pass
+    def update_stats(self, **stats):
+        self._write_logs(stats, self.step)
+
 class CarlEnv:
     SHOW_CAM = SHOW_PREVIEW
     STEER_AMT = 1.0
@@ -46,7 +69,7 @@ class CarlEnv:
     front_camera = None
     
     def __init__(self):
-        self.client=carla.client("localhost",2000)
+        self.client=carla.Client("localhost", 2000)
         self.client.set_timeout(5.0)
         self.world= self.client.get_world()
         self.blueprint_library= self.world.get_blueprint_library()
@@ -119,18 +142,22 @@ class CarlEnv:
 class DQNAgent:
     def __init__(self):
         self.model = self.create_model()
-        self.target_model = self.create_model
+        self
+        self.target_model = self.create_model()
         self.target_model.set_weights(self.model.get_weights())
 
         self.replay_memory = deque(maxlen=REPLAY_MEMORY_SIZE)
-        self.tensorboard= ModifiedTensorBoard(Log_dir=f"logs/{MODEL_NAME}-{int(time.time())}")
+        self.tensorboard = ModifiedTensorBoard(log_dir=f"logs/{MODEL_NAME}-{int(time.time())}")
         self.target_update_counter = 0
-        self.graph = tf.get_default_graph()
+        self.graph = tf.compat.v1.get_default_graph()
+        # self.session = keras.backend.get_session()
+        # self.init = tf.global_variables_initializer()
+        # self.session.run(self.init)
         self.terminate = False
         self.last_logged_episode = 0
         self.training_initialized = False
-    def create_model():
-        base_model = Xception(weights=None, include_top = False, input_shape(IM_HEIGHT,IM_WIDTH,3))
+    def create_model(self):
+        base_model = Xception(weights=None, include_top = False, input_shape=(IM_HEIGHT,IM_WIDTH,3))
         x= base_model.output
         x=GlobalAveragePooling2D()(x)
         predictions = Dense(3, activation= "linear")(x)
@@ -141,8 +168,8 @@ class DQNAgent:
         #transition = (current_state, action, reward, new_state, done)
         self.replay_memory.append(transition)
     def train(self):
-        if(len(self.replay_memory< MIN_REPLAY_SIZE)):
-            pass
+        if(len(self.replay_memory< MIN_REPLAY_MEMORY_SIZE)):
+            return
         minibatch = random.sample(self.replay_memory, MINIBATCH_SIZE)
         current_states = np.array([transition[0] for transition in minibatch])/255
         with self.graph.as_default():
@@ -155,7 +182,7 @@ class DQNAgent:
         y=[]
         for i, (current_state, action, reward, new_state, done) in enumerate(minibatch):
             if (not done):
-                max_future_q= np.max(future_qs_list[index])
+                max_future_q= np.max(future_qs_list[i])
                 new_q = reward + DISCOUNT * max_future_q
             else:
                 new_q = reward
@@ -168,19 +195,20 @@ class DQNAgent:
             log_this_step= True
             self.last_log_episode = self.tensorboard.step
         with self.graph.as_default():
-            self.model.fit(np.array(X)/255, np.array(y), batch_size=TRAINING_BATCH_SIZE, verbose = 0, shuffle = False, callbacks = [self.tensorboard] if(log_this_step) else None)
+            self.model.fit(np.array(X)/255, np.array(y), batch_size=TRAINING_BATCH_SIZE, verbose = 1, shuffle = False, callbacks = [self.tensorboard] if(log_this_step) else None)
         if(log_this_step):
             self.target_update_counter +=1
         if(self.target_update_counter > UPDATE_TARGET_EVERY):
             self.target_model.set_weights(self.model.get_weights())
             self.target_update_counter=0
     def get_qs(self, state):
-        return self.model.predict(np.array(state).reshape(-1*state.shape)/255)[0]
+        return self.model.predict(np.array(state).reshape(-1,*state.shape)/255)[0]
     def train_in_loop(self):
+        tf.compat.v1.disable_v2_behavior()
         X = np.random.uniform(size = (1, IM_HEIGHT, IM_WIDTH, 3)).astype(np.float32)
         y=np.random.uniform(size=(1,3)).astype(np.float32)
         with self.graph.as_default():
-            self.model.fit(X,y, verbose= False, batch_size =1)
+            self.model.fit(X,y, verbose= True, batch_size =1)
         self.training_initialized = True
 
         while True:
@@ -190,31 +218,69 @@ class DQNAgent:
             time.sleep(0.01)
 
 if(__name__=="__main__"):
-    FPS=60
+    FPS=40
     ep_rewards = [-200]       
-
+    tf.compat.v1.disable_eager_execution() 
     random.seed(1)
     np.random.seed(1)
-    tf.set_random_seed(1)
-    
-    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=MEMORY_FRACTION)
-    backend.set_session(tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)))
-
+    tf.random.set_seed(1)
+    tf.compat.v1.disable_v2_behavior()
+    gpu_options=tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=MEMORY_FRACTION)
+    #gpu_options = tf.compact.v1.GPUOptions(per_process_gpu_memory_fraction=MEMORY_FRACTION)
+    #backend.set_session(tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)))
+    backend.set_session(tf.compat.v1.Session(config=tf.compat.v1.ConfigProto(gpu_options=gpu_options)))
     if(not os.path.isdir('models')):
         os.makedirs('models')
 
     agent = DQNAgent()
     env = CarlEnv()
 
+    #tf.compat.v1.disable_v2_behavior()
     trainer_thread = Thread(target=agent.train_in_loop, daemon=True)
     trainer_thread.start()
-    while(not agent.training_initialized):
+    while not agent.training_initialized:
+        #print("hello")
         time.sleep(0.01)
 
     agent.get_qs(np.ones((env.im_height,env.im_width,3)))
-    
+    for episode in tqdm(range(1,EPISODES+1, ascii=True, unit="episodes")):
+        env.collision_hist=[]
+        agent.tensorboard.step = episode
+        episode_reward=0
+        step=1
+        current_state= env.reset()
+        done= False
+        episode_start=time.time() 
 
+        while True:
+            if (np.random.random()>epsilon):
+                action = np.argmax(agent.get_qs(current_state))
+            else:
+                action = np.random.randint(0,3)
+                time.sleep(1/FPS)
+            new_state, reward, done, _ =env.step(action)
+            episode_reward += reward
+            agent.update_replay_memory((current_state, action, reward, new_state, done))
+            step += 1
 
+            if(done):
+                break
+        for actor in env.actor_list:
+            actor.destroy()
+        ep_rewards.append(episode_reward)
+        if(not episode % AGGREGATE_STATS_EVERY or episode==1):
+            average_reward = sum(ep_rewards[-AGGREGATE_STATS_EVERY:])/len(ep_rewards[-AGGREGATE_STATS_EVERY:])
+            min_reward = min(ep_rewards[-AGGREGATE_STATS_EVERY:])
+            max_reward = max(ep_rewards[-AGGREGATE_STATS_EVERY:])
+            agent.tensorboard.update_stats(reward_avg=average_reward, reward_min=min_reward, reward_max=max_reward, epsilon= epsilon)
+            if(min_reward>=MIN_REWARD):
+                agent.model.save(f'models/{MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
+            if(epsilon > MIN_EPSILON):
+                epsilon *=EPSILON_DECAY
+                epsilon = max(MIN_EPSILON, epsilon)
+    agent.terminate = True
+    trainer_thread.join()
+    agent.model.save(f'models/{MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
 
 
 
