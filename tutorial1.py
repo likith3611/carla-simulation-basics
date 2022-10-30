@@ -8,23 +8,28 @@ import numpy as np
 #import Transform
 import carla
 import math
-from keras import backend
+#from keras import backend
 from collections import deque
-from keras.applications.xception import Xception
-from keras.layers import Dense, GlobalAveragePooling2D
-from keras.optimizers import Adam
-from keras.models import Model
-from keras.callbacks import TensorBoard
+from tensorflow.python.keras.models import Model
+from tensorflow.python.keras.layers import Dense, GlobalAveragePooling2D
+from tensorflow.python.keras.callbacks import TensorBoard
+#from keras.applications.xception import Xception
+#from tensorflow.python.keras.models import Xception
+#from keras.layers import Dense, GlobalAveragePooling2D
+#from keras.optimizers import Adam
+from tensorflow.python.keras.optimizer_v1 import Adam
+#from keras.models import Model
+#from keras.callbacks import TensorBoard
 import tensorflow as tf
 #import keras.backend as backend
 import tensorflow.python.keras.backend as backend
 from threading import Thread
 from tqdm import tqdm
-import keras
+from tensorflow.python.keras import backend
 from tensorflow.python.keras.backend import set_session
 #from tensorflow.python.keras.models import load_model
-tf.compat.v1.disable_eager_execution() 
-
+import keras
+tf.compat.v1.disable_eager_execution()
 SHOW_PREVIEW=False
 IM_HEIGHT=480
 IM_WIDTH=640
@@ -83,7 +88,7 @@ class CarlEnv:
         self.actor_list.append(self.vehicle)
 
         self.rgb_cam = self.blueprint_library.find('sensor.camera.rgb')
-        self.rgb_cam.set_attributes("image_size,x", f"{IM_WIDTH}")
+        self.rgb_cam.set_attributes("image_size_x", f"{IM_WIDTH}")
         self.rgb_cam.set_attributes("image_size_y", f"{IM_HEIGHT}")
         self.rgb_cam.set_attributes("fov", "110")
         self.cam_transform= carla.Transform(carla.Location(x=2.5, z=0.7))
@@ -157,8 +162,16 @@ class DQNAgent:
         self.last_logged_episode = 0
         self.training_initialized = False
     def create_model(self):
-        base_model = Xception(weights=None, include_top = False, input_shape=(IM_HEIGHT,IM_WIDTH,3))
-        x= base_model.output
+        tf.compat.v1.disable_v2_behavior()
+        #init_op = tf.compat.v1.initialize_all_variables()
+        init_op=tf.compat.v1.global_variables_initializer()
+        sess = tf.compat.v1.Session()
+        #tf.compat.v1.global_variables_initializer()
+        sess.run(init_op)
+        set_session(sess)
+        #base_model = Xception(weights=None, include_top = False, input_shape=(IM_HEIGHT,IM_WIDTH,3))
+        base_model = tf.keras.applications.xception.Xception(weights=None, include_top = False, input_shape=(IM_HEIGHT,IM_WIDTH,3))
+        x = base_model.output
         x=GlobalAveragePooling2D()(x)
         predictions = Dense(3, activation= "linear")(x)
         model = Model(inputs=base_model.input, outputs = predictions)
@@ -168,15 +181,21 @@ class DQNAgent:
         #transition = (current_state, action, reward, new_state, done)
         self.replay_memory.append(transition)
     def train(self):
-        if(len(self.replay_memory< MIN_REPLAY_MEMORY_SIZE)):
+        init_op = tf.compat.v1.global_variables_initializer()
+        sess = tf.compat.v1.Session()
+        if(len(self.replay_memory)< MIN_REPLAY_MEMORY_SIZE):
             return
         minibatch = random.sample(self.replay_memory, MINIBATCH_SIZE)
         current_states = np.array([transition[0] for transition in minibatch])/255
         with self.graph.as_default():
+            sess.run(init_op)
+            set_session(sess)
             current_qs_list = self.model.predict(current_states, PREDICTION_BATCH_SIZE)
         
         new_current_states = np.array([transition[3] for transition in minibatch])/255
         with self.graph.as_default():
+            sess.run(init_op)
+            set_session(sess)
             future_qs_list = self.target_model.predict(new_current_states, PREDICTION_BATCH_SIZE)
         X=[]
         y=[]
@@ -195,6 +214,8 @@ class DQNAgent:
             log_this_step= True
             self.last_log_episode = self.tensorboard.step
         with self.graph.as_default():
+            sess.run(init_op)
+            set_session(sess)
             self.model.fit(np.array(X)/255, np.array(y), batch_size=TRAINING_BATCH_SIZE, verbose = 1, shuffle = False, callbacks = [self.tensorboard] if(log_this_step) else None)
         if(log_this_step):
             self.target_update_counter +=1
@@ -204,11 +225,17 @@ class DQNAgent:
     def get_qs(self, state):
         return self.model.predict(np.array(state).reshape(-1,*state.shape)/255)[0]
     def train_in_loop(self):
-        tf.compat.v1.disable_v2_behavior()
+        sess = tf.compat.v1.Session()
+        print("hello")
         X = np.random.uniform(size = (1, IM_HEIGHT, IM_WIDTH, 3)).astype(np.float32)
-        y=np.random.uniform(size=(1,3)).astype(np.float32)
+        y = np.random.uniform(size=(1,3)).astype(np.float32)
         with self.graph.as_default():
-            self.model.fit(X,y, verbose= True, batch_size =1)
+            sess = tf.compat.v1.Session()
+            #tf.compat.v1.disable_v2_behavior()
+            sess.run(tf.compat.v1.global_variables_initializer())
+            set_session(sess)
+            self.model.fit(X,y, verbose= False, batch_size =1)
+            print("Liki")
         self.training_initialized = True
 
         while True:
@@ -228,6 +255,10 @@ if(__name__=="__main__"):
     gpu_options=tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=MEMORY_FRACTION)
     #gpu_options = tf.compact.v1.GPUOptions(per_process_gpu_memory_fraction=MEMORY_FRACTION)
     #backend.set_session(tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)))
+    init_op = tf.compat.v1.global_variables_initializer()
+    sess = tf.compat.v1.Session()
+    sess.run(init_op)
+    set_session(sess)
     backend.set_session(tf.compat.v1.Session(config=tf.compat.v1.ConfigProto(gpu_options=gpu_options)))
     if(not os.path.isdir('models')):
         os.makedirs('models')
@@ -243,7 +274,7 @@ if(__name__=="__main__"):
         time.sleep(0.01)
 
     agent.get_qs(np.ones((env.im_height,env.im_width,3)))
-    for episode in tqdm(range(1,EPISODES+1, ascii=True, unit="episodes")):
+    for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episodes'):
         env.collision_hist=[]
         agent.tensorboard.step = episode
         episode_reward=0
