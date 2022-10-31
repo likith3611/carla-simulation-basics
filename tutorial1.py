@@ -44,12 +44,19 @@ MODEL_NAME = 'Xception'
 MEMORY_FRACTION = 0.7
 MIN_REWARD = -200
 DISCOUNT = 0.99
-EPISODES = 100
+EPISODES = 10
 EPSILON_DECAY = 0.95
 MIN_EPSILON = 0.001
 AGGREGATE_STATS_EVERY = 10
+epsilon = 1
 actor_list=[]
-
+try:
+    sys.path.append(glob.glob('../carla/dist/carla-*%d.%d-%s.egg' % (
+        sys.version_info.major,
+        sys.version_info.minor,
+        'win-amd64' if os.name == 'nt' else 'linux-x86_64'))[0])
+except IndexError:
+    pass
 class ModifiedTensorBoard(TensorBoard):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -63,6 +70,12 @@ class ModifiedTensorBoard(TensorBoard):
         pass
     def on_train_end(self, _):
         pass
+    def _write_logs(self, logs, index):
+        with self.writer.as_default():
+            for name, value in logs.items():
+                tf.summary.scalar(name, value, step=index)
+                self.step += 1
+                self.writer.flush()
     def update_stats(self, **stats):
         self._write_logs(stats, self.step)
 
@@ -82,17 +95,25 @@ class CarlEnv:
     
     def reset(self):
         self.collision_hist = []
+        self.vehicle = None
+        i=0
         self.actor_list=[]
-        self.transform = random.choice(self.world.get_map().get_spawn_points())
-        self.vehicle = self.world.spawn_actor(self.model_3, self.transform)
+        #self.transform = random.choice(self.world.get_map().get_spawn_points())
+        #self.transform = carla.Transform(carla.Location(x=199.419632, y=-5.502129, z=0.0009), carla.Rotation(pitch=0.000000, yaw=-179.144165, roll=0.000000))
+        while(self.vehicle == None):
+            self.transform = random.choice(self.world.get_map().get_spawn_points())
+            self.vehicle = self.world.try_spawn_actor(self.model_3, self.transform)
+            i+=1
+            print(i)
         self.actor_list.append(self.vehicle)
+        print(self.vehicle)
 
         self.rgb_cam = self.blueprint_library.find('sensor.camera.rgb')
-        self.rgb_cam.set_attributes("image_size_x", f"{IM_WIDTH}")
-        self.rgb_cam.set_attributes("image_size_y", f"{IM_HEIGHT}")
-        self.rgb_cam.set_attributes("fov", "110")
+        self.rgb_cam.set_attribute("image_size_x", f"{IM_WIDTH}")
+        self.rgb_cam.set_attribute("image_size_y", f"{IM_HEIGHT}")
+        self.rgb_cam.set_attribute("fov", "110")
         self.cam_transform= carla.Transform(carla.Location(x=2.5, z=0.7))
-        self.cam_sensor = self.world.spawn_actor(self.rgb_cam, self.cam_transform, attach= self.vehicle)
+        self.cam_sensor = self.world.spawn_actor(self.rgb_cam, self.cam_transform, attach_to= self.vehicle)
         self.actor_list.append(self.cam_sensor)
         self.cam_sensor.listen(lambda data: self.camera_sensor(data))
         
@@ -100,7 +121,7 @@ class CarlEnv:
         time.sleep(4)
 
         colsensor=self.blueprint_library.find('sensor.other.collision')
-        self.colsensor= self.world.spawn_actor(colsensor, self.cam_transform, attach=self.vehicle)
+        self.colsensor= self.world.spawn_actor(colsensor, self.cam_transform, attach_to=self.vehicle)
         self.actor_list.append(colsensor)
         self.colsensor.listen(lambda event: self.collision_data(event))
 
@@ -117,9 +138,9 @@ class CarlEnv:
         i=np.array(data.raw_data)
         i2= i.reshape((480,640,4))
         image=i2[:, :, :3]
-        if(self.SHOW_CAM):
-            cv2.imshow("carla image", image)
-            cv2.waitKey(1)
+        #if(self.SHOW_CAM):
+        cv2.imshow("carla image", image)
+        cv2.waitKey(1)
         self.front_camera = image
         
     def step(self,action):
@@ -130,7 +151,7 @@ class CarlEnv:
         elif(action==2):
             self.vehicle.apply_control(carla.VehicleControl(throttle=1.0, steer=1*self.STEER_AMT))
         velocity= self.vehicle.get_velocity()
-        velocity_kmph=int(3.6*math.sqrt(velocity.x**2, velocity.y**2, velocity.z**2))
+        velocity_kmph=int(3.6*math.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2))
         if(len(self.collision_hist)!=0):
             done=True
             reward = -200
@@ -164,10 +185,10 @@ class DQNAgent:
     def create_model(self):
         tf.compat.v1.disable_v2_behavior()
         #init_op = tf.compat.v1.initialize_all_variables()
-        init_op=tf.compat.v1.global_variables_initializer()
+        #init_op=tf.compat.v1.global_variables_initializer()
         sess = tf.compat.v1.Session()
         #tf.compat.v1.global_variables_initializer()
-        sess.run(init_op)
+        sess.run(tf.compat.v1.global_variables_initializer())
         set_session(sess)
         #base_model = Xception(weights=None, include_top = False, input_shape=(IM_HEIGHT,IM_WIDTH,3))
         base_model = tf.keras.applications.xception.Xception(weights=None, include_top = False, input_shape=(IM_HEIGHT,IM_WIDTH,3))
@@ -188,13 +209,13 @@ class DQNAgent:
         minibatch = random.sample(self.replay_memory, MINIBATCH_SIZE)
         current_states = np.array([transition[0] for transition in minibatch])/255
         with self.graph.as_default():
-            sess.run(init_op)
+            sess.run(tf.compat.v1.global_variables_initializer())
             set_session(sess)
             current_qs_list = self.model.predict(current_states, PREDICTION_BATCH_SIZE)
         
         new_current_states = np.array([transition[3] for transition in minibatch])/255
         with self.graph.as_default():
-            sess.run(init_op)
+            sess.run(tf.compat.v1.global_variables_initializer())
             set_session(sess)
             future_qs_list = self.target_model.predict(new_current_states, PREDICTION_BATCH_SIZE)
         X=[]
@@ -235,7 +256,6 @@ class DQNAgent:
             sess.run(tf.compat.v1.global_variables_initializer())
             set_session(sess)
             self.model.fit(X,y, verbose= False, batch_size =1)
-            print("Liki")
         self.training_initialized = True
 
         while True:
@@ -296,8 +316,14 @@ if(__name__=="__main__"):
 
             if(done):
                 break
-        for actor in env.actor_list:
-            actor.destroy()
+        for j in range(len(env.actor_list)):
+            #print(j)
+            if("ActorBlueprint" in str(env.actor_list[j])):
+                pass
+            else:
+                env.actor_list[j].destroy()
+            print(env.actor_list)
+
         ep_rewards.append(episode_reward)
         if(not episode % AGGREGATE_STATS_EVERY or episode==1):
             average_reward = sum(ep_rewards[-AGGREGATE_STATS_EVERY:])/len(ep_rewards[-AGGREGATE_STATS_EVERY:])
@@ -325,12 +351,20 @@ if(__name__=="__main__"):
 
 
 
+# def camera_sensor(data):
+#     i=np.array(data.raw_data)
+#     i2= i.reshape((IM_HEIGHT,IM_WIDTH,4))
+#     # print(i2)
+#     image=i2[:, :, :3]
+#     #if(self.SHOW_CAM):
+#     cv2.imshow("carla_image", image)
+#     cv2.waitKey(1)
+#     return image/255.0
 
 
-
-# IM_WIDTH=640
-# IM_HEIGHT=480
-# actor_list=[]
+# # IM_WIDTH=640
+# # IM_HEIGHT=480
+# # actor_list=[]
 # try:
 #     client=carla.Client("localhost", 2000)
 #     client.set_timeout(2.0)
@@ -338,7 +372,6 @@ if(__name__=="__main__"):
 #     world = client.get_world()
 #     blueprint_library=world.get_blueprint_library()
 #     bp=blueprint_library.filter('model3')[0]
-#     print(bp)
 #     spawn_point=random.choice(world.get_map().get_spawn_points())
 #     #vehiclespawn=Transform(Location(x=230, y=195, z=40), Rotation(yaw=180))
 #     vehicle = world.spawn_actor(bp,spawn_point)
@@ -346,17 +379,17 @@ if(__name__=="__main__"):
 #     actor_list.append(vehicle)
 
 #     cam_bp= blueprint_library.find('sensor.camera.rgb')
-#     cam_bp.set_attribute("image_size_x","640")
-#     cam_bp.set_attribute("image_size_y","480")
+#     cam_bp.set_attribute("image_size_x",f"{IM_WIDTH}")
+#     cam_bp.set_attribute("image_size_y",f"{IM_HEIGHT}")
 #     #cam_bp.set_attribute("fov","110")
-#     spawn_point=carla.Transform(carla.Location(x=2.5,z=0.7))
+#     spawn_point=carla.Transform(carla.Location(x=12.5,z=5.7))
 #     sensor = world.spawn_actor(cam_bp, spawn_point, attach_to=vehicle)
 #     actor_list.append(sensor)
 #     #sensor.listen(lambda image: image.save_to_disk('output/%06d.png' % image.frame_number))
 #     sensor.listen(lambda data: camera_sensor(data))
 
 
-#     time.sleep(10)
+#     time.sleep(20)
 
 
 # finally:
