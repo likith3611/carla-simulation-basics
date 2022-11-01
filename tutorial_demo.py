@@ -4,22 +4,24 @@ import numpy as np
 import cv2
 import time
 import tensorflow as tf
-import tensorflow.python.keras.backend as backend
-from tensorflow.python.keras.models import load_model
+#import tensorflow.python.keras.backend as backend
+#from tensorflow.python.keras.models import load_model
 from tutorial1 import CarlEnv, MEMORY_FRACTION
 
 
-MODEL_PATH = 'models/Xception__-311.00max_-376.90avg_-442.00min__1667240405.model'
+MODEL_PATH = 'models/Xception__-153.00max_-274.40avg_-329.00min__1667308901.model'
 
 if __name__ == '__main__':
 
     # Memory fraction
     
     gpu_options = tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=MEMORY_FRACTION)
-    backend.set_session(tf.compat.v1.Session(config=tf.compat.v1.ConfigProto(gpu_options=gpu_options)))
+    tf.compat.v1.keras.backend.set_session(tf.compat.v1.Session(config=tf.compat.v1.ConfigProto(gpu_options=gpu_options)))
     
     # Load the model
-    model = load_model(MODEL_PATH)
+    model = tf.compat.v1.keras.models.load_model(MODEL_PATH)
+    
+    
 
     # Create environment
     env = CarlEnv()
@@ -73,4 +75,7 @@ if __name__ == '__main__':
 
         # Destroy an actor at end of episode
         for actor in env.actor_list:
-            actor.destroy()
+            if("ActorBlueprint" in str(actor)):
+                pass
+            else:
+                actor.destroy()

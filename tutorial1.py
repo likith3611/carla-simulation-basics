@@ -10,26 +10,27 @@ import carla
 import math
 #from keras import backend
 from collections import deque
-from tensorflow.python.keras.models import Model
-from tensorflow.python.keras.layers import Dense, GlobalAveragePooling2D
-from tensorflow.python.keras.callbacks import TensorBoard
+from requests import session
+#from tensorflow.python.keras.models import Model
+#from tensorflow.python.keras.layers import Dense, GlobalAveragePooling2D
+#from tensorflow.python.keras.callbacks import TensorBoard
 #from keras.applications.xception import Xception
 #from tensorflow.python.keras.models import Xception
 #from keras.layers import Dense, GlobalAveragePooling2D
 #from keras.optimizers import Adam
-from tensorflow.python.keras.optimizer_v1 import Adam
+#from tensorflow.python.keras.optimizer_v1 import Adam
 #from keras.models import Model
 #from keras.callbacks import TensorBoard
 import tensorflow as tf
 #import keras.backend as backend
-import tensorflow.python.keras.backend as backend
+#import tensorflow.python.keras.backend as backend
 from threading import Thread
 from tqdm import tqdm
-from tensorflow.python.keras import backend
+#from tensorflow.python.keras import backend
 from tensorflow.python.keras.backend import set_session
 #from tensorflow.python.keras.models import load_model
-import keras
 tf.compat.v1.disable_eager_execution()
+
 SHOW_PREVIEW=False
 IM_HEIGHT=480
 IM_WIDTH=640
@@ -44,12 +45,13 @@ MODEL_NAME = 'Xception'
 MEMORY_FRACTION = 0.7
 MIN_REWARD = -200
 DISCOUNT = 0.99
-EPISODES = 10
+EPISODES = 50
 EPSILON_DECAY = 0.95
 MIN_EPSILON = 0.001
 AGGREGATE_STATS_EVERY = 10
 epsilon = 1
 actor_list=[]
+
 try:
     sys.path.append(glob.glob('../carla/dist/carla-*%d.%d-%s.egg' % (
         sys.version_info.major,
@@ -57,7 +59,8 @@ try:
         'win-amd64' if os.name == 'nt' else 'linux-x86_64'))[0])
 except IndexError:
     pass
-class ModifiedTensorBoard(TensorBoard):
+
+class ModifiedTensorBoard(tf.compat.v1.keras.callbacks.TensorBoard):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.step = 1
@@ -138,9 +141,12 @@ class CarlEnv:
         i=np.array(data.raw_data)
         i2= i.reshape((480,640,4))
         image=i2[:, :, :3]
-        #if(self.SHOW_CAM):
-        cv2.imshow("carla image", image)
-        cv2.waitKey(1)
+        #img = cv2.imread('1.jpg', 1)
+        # path = '/home/lightyagami/carla-simulation-basics/models'
+        # cv2.imwrite(os.path.join(path , 'waka.jpg'), image)
+        if(self.SHOW_CAM):
+            cv2.imshow("carla image", image)
+            cv2.waitKey(1)
         self.front_camera = image
         
     def step(self,action):
@@ -167,8 +173,12 @@ class CarlEnv:
 
 class DQNAgent:
     def __init__(self):
+        # sess = tf.compat.v1.Session()
+        # sess.run(tf.compat.v1.global_variables_initializer())
+        # sess.run(tf.compat.v1.initialize_all_variables())
+        self.sess = tf.compat.v1.Session()
+        self.sess.run(tf.compat.v1.global_variables_initializer())
         self.model = self.create_model()
-        self
         self.target_model = self.create_model()
         self.target_model.set_weights(self.model.get_weights())
 
@@ -183,40 +193,47 @@ class DQNAgent:
         self.last_logged_episode = 0
         self.training_initialized = False
     def create_model(self):
-        tf.compat.v1.disable_v2_behavior()
+        #tf.compat.v1.disable_v2_behavior()
         #init_op = tf.compat.v1.initialize_all_variables()
         #init_op=tf.compat.v1.global_variables_initializer()
-        sess = tf.compat.v1.Session()
-        #tf.compat.v1.global_variables_initializer()
-        sess.run(tf.compat.v1.global_variables_initializer())
-        set_session(sess)
+        
+        # #tf.compat.v1.global_variables_initializer()
+        #sess.run(tf.compat.v1.global_variables_initializer())
+        
+        # tf.compat.v1.keras.backend.set_session(sess)
         #base_model = Xception(weights=None, include_top = False, input_shape=(IM_HEIGHT,IM_WIDTH,3))
-        base_model = tf.keras.applications.xception.Xception(weights=None, include_top = False, input_shape=(IM_HEIGHT,IM_WIDTH,3))
+        base_model = tf.compat.v1.keras.applications.xception.Xception(weights=None, include_top = False, input_shape=(IM_HEIGHT,IM_WIDTH,3))
+        
         x = base_model.output
-        x=GlobalAveragePooling2D()(x)
-        predictions = Dense(3, activation= "linear")(x)
-        model = Model(inputs=base_model.input, outputs = predictions)
-        model.compile(loss="mse", optimizer =Adam(lr = 0.001), metrics=['accuracy'])
+        x=tf.compat.v1.keras.layers.GlobalAveragePooling2D()(x)
+        y=tf.compat.v1.keras.optimizers.SGD()
+        y.learning_rate=0.001
+        # with tf.compat.v1.Session() as session:
+        #     session.run(tf.compat.v1.tables_initializer)
+        tf.compat.v1.keras.backend.set_session(self.sess)
+        predictions = tf.compat.v1.keras.layers.Dense(3, activation= "linear")(x)
+        model = tf.compat.v1.keras.Model(inputs=base_model.input, outputs = predictions)
+        model.compile(loss="mse", optimizer = tf.compat.v1.keras.optimizers.Adam(learning_rate=0.001), metrics=['accuracy']) 
+        
         return model
     def update_replay_memory(self,transition):
         #transition = (current_state, action, reward, new_state, done)
         self.replay_memory.append(transition)
     def train(self):
-        init_op = tf.compat.v1.global_variables_initializer()
-        sess = tf.compat.v1.Session()
+        #sess = tf.compat.v1.Session()
         if(len(self.replay_memory)< MIN_REPLAY_MEMORY_SIZE):
             return
         minibatch = random.sample(self.replay_memory, MINIBATCH_SIZE)
         current_states = np.array([transition[0] for transition in minibatch])/255
         with self.graph.as_default():
-            sess.run(tf.compat.v1.global_variables_initializer())
-            set_session(sess)
+            # sess.run(tf.compat.v1.global_variables_initializer())
+            # tf.compat.v1.keras.backend.set_session(sess)
             current_qs_list = self.model.predict(current_states, PREDICTION_BATCH_SIZE)
         
         new_current_states = np.array([transition[3] for transition in minibatch])/255
         with self.graph.as_default():
-            sess.run(tf.compat.v1.global_variables_initializer())
-            set_session(sess)
+            # sess.run(tf.compat.v1.global_variables_initializer())
+            # tf.compat.v1.keras.backend.set_session(sess)
             future_qs_list = self.target_model.predict(new_current_states, PREDICTION_BATCH_SIZE)
         X=[]
         y=[]
@@ -235,8 +252,9 @@ class DQNAgent:
             log_this_step= True
             self.last_log_episode = self.tensorboard.step
         with self.graph.as_default():
-            sess.run(init_op)
-            set_session(sess)
+            # sess.run(init_op)
+            # tf.compat.v1.keras.backend.set_session(sess)
+            tf.compat.v1.keras.backend.set_session(self.sess)
             self.model.fit(np.array(X)/255, np.array(y), batch_size=TRAINING_BATCH_SIZE, verbose = 1, shuffle = False, callbacks = [self.tensorboard] if(log_this_step) else None)
         if(log_this_step):
             self.target_update_counter +=1
@@ -246,19 +264,30 @@ class DQNAgent:
     def get_qs(self, state):
         return self.model.predict(np.array(state).reshape(-1,*state.shape)/255)[0]
     def train_in_loop(self):
-        sess = tf.compat.v1.Session()
+        # sess = tf.compat.v1.Session()
+        # gpu_options=tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=MEMORY_FRACTION)
+        #sess = tf.compat.v1.keras.backend.get_session()
         print("hello")
+
         X = np.random.uniform(size = (1, IM_HEIGHT, IM_WIDTH, 3)).astype(np.float32)
         y = np.random.uniform(size=(1,3)).astype(np.float32)
         with self.graph.as_default():
-            sess = tf.compat.v1.Session()
+            # self.sess = tf.compat.v1.Session()
+            # self.sess.run(tf.compat.v1.global_variables_initializer())
+            # sess= tf.compat.v1.keras.backend.get_session()
+            
             #tf.compat.v1.disable_v2_behavior()
-            sess.run(tf.compat.v1.global_variables_initializer())
-            set_session(sess)
+            
+            #sess.run(tf.compat.v1.global_variables_initializer())
+            #tf.compat.v1.keras.backend.set_session(swe)
+            tf.compat.v1.keras.backend.set_session(self.sess)
+            #sesssion_1=tf.compat.v1.keras.backend.get_session()
+            # tf.compat.v1.Session().run(tf.compat.v1.global_variables_initializer())
             self.model.fit(X,y, verbose= False, batch_size =1)
         self.training_initialized = True
 
         while True:
+            print("hello")
             if(self.terminate):
                 return
             self.train()
@@ -267,19 +296,24 @@ class DQNAgent:
 if(__name__=="__main__"):
     FPS=40
     ep_rewards = [-200]       
-    tf.compat.v1.disable_eager_execution() 
+    #tf.compat.v1.disable_eager_execution() 
     random.seed(1)
     np.random.seed(1)
     tf.random.set_seed(1)
     tf.compat.v1.disable_v2_behavior()
-    gpu_options=tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=MEMORY_FRACTION)
+
     #gpu_options = tf.compact.v1.GPUOptions(per_process_gpu_memory_fraction=MEMORY_FRACTION)
-    #backend.set_session(tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)))
-    init_op = tf.compat.v1.global_variables_initializer()
-    sess = tf.compat.v1.Session()
-    sess.run(init_op)
-    set_session(sess)
-    backend.set_session(tf.compat.v1.Session(config=tf.compat.v1.ConfigProto(gpu_options=gpu_options)))
+    #backend.tf.compat.v1.keras.backend.set_session(tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)))
+    # init_op = tf.compat.v1.global_variables_initializer()
+    # sess = tf.compat.v1.Session()
+    # sess.run(tf.compat.v1.global_variables_initializer())
+    # tf.compat.v1.keras.backend.set_session(sess)
+    # gpu_options=tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=MEMORY_FRACTION)
+    # x=tf.compat.v1.Session(config=tf.compat.v1.ConfigProto(gpu_options=gpu_options))
+    # x.run(tf.compat.v1.global_variables_initializer())
+    # tf.compat.v1.keras.backend.set_session(x)
+
+    
     if(not os.path.isdir('models')):
         os.makedirs('models')
 
@@ -302,7 +336,7 @@ if(__name__=="__main__"):
         current_state= env.reset()
         done= False
         episode_start=time.time() 
-
+        
         while True:
             if (np.random.random()>epsilon):
                 action = np.argmax(agent.get_qs(current_state))
@@ -331,12 +365,15 @@ if(__name__=="__main__"):
             max_reward = max(ep_rewards[-AGGREGATE_STATS_EVERY:])
             agent.tensorboard.update_stats(reward_avg=average_reward, reward_min=min_reward, reward_max=max_reward, epsilon= epsilon)
             if(min_reward>=MIN_REWARD):
+
                 agent.model.save(f'models/{MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
+                pass
             if(epsilon > MIN_EPSILON):
                 epsilon *=EPSILON_DECAY
                 epsilon = max(MIN_EPSILON, epsilon)
     agent.terminate = True
     trainer_thread.join()
+    # tf.compat.v1.keras.models.save_model
     agent.model.save(f'models/{MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
 
 
